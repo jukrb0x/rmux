@@ -8,13 +8,14 @@ use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{
     DuplicateHandle, GetLastError, DUPLICATE_SAME_ACCESS, ERROR_ACCESS_DENIED,
-    ERROR_INVALID_PARAMETER, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
@@ -47,6 +48,14 @@ pub(crate) struct WindowsChild {
 impl WindowsChild {
     pub(crate) fn pid(&self) -> ProcessId {
         self.pid
+    }
+
+    pub(crate) fn process_ids(&self) -> Result<Vec<ProcessId>> {
+        let job = self
+            .job
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Windows child has no Job Object guard"))?;
+        job.process_ids()?.into_iter().map(ProcessId::new).collect()
     }
 }
 
@@ -476,6 +485,88 @@ impl JobObjectGuard {
         })
     }
 
+    fn process_ids(&self) -> io::Result<Vec<u32>> {
+        const MAX_JOB_PROCESS_IDS: usize = 65_536;
+
+        let mut capacity = 8_usize;
+        loop {
+            if capacity > MAX_JOB_PROCESS_IDS {
+                return Err(io::Error::other(format!(
+                    "job process count exceeds safety limit ({MAX_JOB_PROCESS_IDS})"
+                )));
+            }
+            let bytes = capacity
+                .checked_sub(1)
+                .and_then(|extra| extra.checked_mul(size_of::<usize>()))
+                .and_then(|extra| size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>().checked_add(extra))
+                .ok_or_else(|| io::Error::other("job process list buffer is too large"))?;
+            let bytes = u32::try_from(bytes)
+                .map_err(|_| io::Error::other("job process list buffer is too large"))?;
+            let slots = (bytes as usize).div_ceil(size_of::<usize>());
+            let mut storage = vec![0_usize; slots];
+            let list = storage
+                .as_mut_ptr()
+                .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+            let ok = unsafe {
+                // SAFETY: `storage` is aligned for and large enough to contain
+                // the header plus `capacity` process identifiers. The job
+                // handle remains live and the API only writes within `bytes`.
+                QueryInformationJobObject(
+                    self.handle.as_raw_handle() as HANDLE,
+                    JobObjectBasicProcessIdList,
+                    list.cast(),
+                    bytes,
+                    null_mut(),
+                )
+            };
+            let header = unsafe {
+                // SAFETY: `list` points to initialized, aligned storage that
+                // remains alive until the end of this loop iteration.
+                &*list
+            };
+            let assigned = header.NumberOfAssignedProcesses as usize;
+            let listed = header.NumberOfProcessIdsInList as usize;
+            if ok == 0 {
+                let error = last_os_error();
+                if error.raw_os_error() == Some(ERROR_MORE_DATA as i32) || assigned > capacity {
+                    capacity = assigned.max(
+                        capacity
+                            .checked_mul(2)
+                            .ok_or_else(|| io::Error::other("job process capacity overflow"))?,
+                    );
+                    continue;
+                }
+                return Err(error);
+            }
+            if listed < assigned {
+                capacity = assigned.max(
+                    capacity
+                        .checked_mul(2)
+                        .ok_or_else(|| io::Error::other("job process capacity overflow"))?,
+                );
+                continue;
+            }
+            if listed > capacity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "job process query returned more identifiers than the buffer holds",
+                ));
+            }
+            let ids = unsafe {
+                // SAFETY: A successful query reports `listed` valid entries
+                // in the variable-length array backed by `storage`.
+                std::slice::from_raw_parts(header.ProcessIdList.as_ptr(), listed)
+            };
+            return ids
+                .iter()
+                .map(|pid| {
+                    u32::try_from(*pid)
+                        .map_err(|_| io::Error::other(format!("invalid Windows process id {pid}")))
+                })
+                .collect();
+        }
+    }
+
     fn terminate(&self, exit_code: u32) -> io::Result<()> {
         // SAFETY: `self.handle` is a live job handle owned by this guard; the
         // API does not take ownership of it.
@@ -566,11 +657,78 @@ fn last_os_error() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::child_job_limit_flags;
+    use std::os::windows::io::AsRawHandle;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::{child_job_limit_flags, last_os_error, JobObjectGuard};
+    use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::JobObjects::{
-        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+        AssignProcessToJobObject, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
     };
+
+    #[test]
+    fn job_object_lists_active_root_and_descendant_processes() {
+        let job = JobObjectGuard::new(false).expect("job object");
+        let mut child = Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Milliseconds 750; $children = 1..12 | ForEach-Object { Start-Process -PassThru -WindowStyle Hidden -FilePath $env:ComSpec -ArgumentList '/d','/s','/c','ping 127.0.0.1 -n 10 >nul' }; Wait-Process -Id $children.Id",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn delayed descendant owner");
+        let root_pid = child.id();
+        let assigned = unsafe {
+            // SAFETY: Both handles are live for the duration of this call and
+            // the API only associates the child process with the test job.
+            AssignProcessToJobObject(
+                job.handle.as_raw_handle() as HANDLE,
+                child.as_raw_handle() as HANDLE,
+            )
+        };
+        assert_ne!(assigned, 0, "job assignment failed: {}", last_os_error());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let active = loop {
+            let ids = job.process_ids().expect("query active job processes");
+            if ids.contains(&root_pid) && ids.len() > 8 {
+                break ids;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "descendant never entered job: {ids:?}"
+            );
+            thread::sleep(Duration::from_millis(25));
+        };
+        assert!(active.contains(&root_pid));
+        assert!(
+            active.len() > 8,
+            "test must exercise JobObjectBasicProcessIdList buffer growth: {active:?}"
+        );
+
+        job.terminate(1).expect("terminate test job");
+        let _ = child.wait();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let ids = job.process_ids().expect("query emptied job");
+            if ids.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "terminated job still lists {ids:?}"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
 
     #[test]
     fn child_job_defaults_to_strict_cleanup() {

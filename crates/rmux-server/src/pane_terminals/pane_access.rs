@@ -391,6 +391,19 @@ impl HandlerState {
         result
     }
 
+    #[cfg(windows)]
+    pub(crate) fn pane_process_ids_in_window(
+        &self,
+        session_name: &SessionName,
+        window_index: u32,
+        pane_index: u32,
+    ) -> Result<Vec<u32>, RmuxError> {
+        let pane_id = pane_id_for_target(&self.sessions, session_name, window_index, pane_index)?;
+        let runtime_session_name = self.runtime_session_name_for_window(session_name, window_index);
+        self.terminals
+            .pane_process_ids(&runtime_session_name, pane_id, window_index, pane_index)
+    }
+
     #[cfg(unix)]
     pub(crate) fn pane_tty_path_in_window(
         &self,

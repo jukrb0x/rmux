@@ -215,6 +215,178 @@ fn windows_full_helper_client_shell_handoff_starts_power_shell_pane_when_availab
 }
 
 #[test]
+fn windows_nu_lazygit_updates_current_command_and_automatic_name_until_exit(
+) -> Result<(), Box<dyn Error>> {
+    let _serial = lock_windows_console_test();
+    if !windows_command_available("nu.exe") || !windows_command_available("lazygit.exe") {
+        eprintln!("skipping Nu/lazygit title probe because one of the commands is unavailable");
+        return Ok(());
+    }
+
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rmux"));
+    let label = unique_label("win-nu-lazygit-title");
+    let _guard = RmuxServerGuard::new(&binary, label.clone());
+    let start = Command::new(&binary)
+        .arg("-L")
+        .arg(&label)
+        .arg("start-server")
+        .env("RMUX_ALLOW_INTERNAL_DAEMON_IN_CALLER_JOB", "1")
+        .status()?;
+    assert!(start.success(), "start-server failed with {start}");
+    run_rmux(
+        &binary,
+        &label,
+        ["set-option", "-g", "default-command", "nu"],
+    )?;
+    run_rmux(&binary, &label, ["new-session", "-d", "-s", "nutitle"])?;
+
+    wait_for_window_and_current_command(&binary, &label, "nutitle", "nu", SETUP_TIMEOUT)?;
+    run_rmux(
+        &binary,
+        &label,
+        ["send-keys", "-t", "nutitle", "lazygit", "Enter"],
+    )?;
+    wait_for_window_and_current_command(&binary, &label, "nutitle", "lazygit", SETUP_TIMEOUT)?;
+    assert_automatic_window_name_resolves_as_target(&binary, &label, "nutitle", "lazygit")?;
+
+    // The process name becomes visible as soon as lazygit starts, before its
+    // terminal input loop is guaranteed to be ready. Mirror an interactive
+    // user by allowing the TUI to finish initialization before asking it to
+    // quit; otherwise the key can be consumed during startup.
+    thread::sleep(Duration::from_millis(500));
+
+    run_rmux(&binary, &label, ["send-keys", "-t", "nutitle", "q"])?;
+    wait_for_window_and_current_command(&binary, &label, "nutitle", "nu", SETUP_TIMEOUT)?;
+
+    Ok(())
+}
+
+#[test]
+fn windows_cmd_ping_updates_current_command_and_automatic_name_until_exit(
+) -> Result<(), Box<dyn Error>> {
+    let _serial = lock_windows_console_test();
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rmux"));
+    let label = unique_label("win-cmd-ping-title");
+    let _guard = RmuxServerGuard::new(&binary, label.clone());
+    let start = Command::new(&binary)
+        .arg("-L")
+        .arg(&label)
+        .arg("start-server")
+        .env("RMUX_ALLOW_INTERNAL_DAEMON_IN_CALLER_JOB", "1")
+        .status()?;
+    assert!(start.success(), "start-server failed with {start}");
+    run_rmux(
+        &binary,
+        &label,
+        ["set-option", "-g", "default-command", "cmd.exe"],
+    )?;
+    run_rmux(&binary, &label, ["new-session", "-d", "-s", "cmdtitle"])?;
+
+    wait_for_window_and_current_command(&binary, &label, "cmdtitle", "cmd", SETUP_TIMEOUT)?;
+    run_rmux(
+        &binary,
+        &label,
+        [
+            "send-keys",
+            "-t",
+            "cmdtitle",
+            "ping 127.0.0.1 -n 3",
+            "Enter",
+        ],
+    )?;
+    wait_for_window_and_current_command(&binary, &label, "cmdtitle", "ping", SETUP_TIMEOUT)?;
+    assert_automatic_window_name_resolves_as_target(&binary, &label, "cmdtitle", "ping")?;
+    wait_for_window_and_current_command(&binary, &label, "cmdtitle", "cmd", SETUP_TIMEOUT)?;
+
+    Ok(())
+}
+
+#[test]
+fn windows_cmd_nested_powershell_becomes_current_command_until_exit() -> Result<(), Box<dyn Error>>
+{
+    let _serial = lock_windows_console_test();
+    if !windows_command_available("powershell.exe") {
+        eprintln!("skipping nested PowerShell title probe because powershell.exe is unavailable");
+        return Ok(());
+    }
+
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rmux"));
+    let label = unique_label("win-cmd-powershell-title");
+    let _guard = RmuxServerGuard::new(&binary, label.clone());
+    let start = Command::new(&binary)
+        .arg("-L")
+        .arg(&label)
+        .arg("start-server")
+        .env("RMUX_ALLOW_INTERNAL_DAEMON_IN_CALLER_JOB", "1")
+        .status()?;
+    assert!(start.success(), "start-server failed with {start}");
+    run_rmux(
+        &binary,
+        &label,
+        ["set-option", "-g", "default-command", "cmd.exe"],
+    )?;
+    run_rmux(
+        &binary,
+        &label,
+        ["new-session", "-d", "-s", "cmdpowershell"],
+    )?;
+
+    wait_for_window_and_current_command(&binary, &label, "cmdpowershell", "cmd", SETUP_TIMEOUT)?;
+    run_rmux(
+        &binary,
+        &label,
+        [
+            "send-keys",
+            "-t",
+            "cmdpowershell",
+            "powershell.exe -NoLogo -NoProfile",
+            "Enter",
+        ],
+    )?;
+    thread::sleep(Duration::from_millis(500));
+    run_rmux(
+        &binary,
+        &label,
+        [
+            "send-keys",
+            "-t",
+            "cmdpowershell",
+            "Write-Output RMUX_NESTED_READY",
+            "Enter",
+        ],
+    )?;
+    wait_for_capture_contains(
+        &binary,
+        &label,
+        "cmdpowershell",
+        b"RMUX_NESTED_READY",
+        SETUP_TIMEOUT,
+    )?;
+    wait_for_window_and_current_command(
+        &binary,
+        &label,
+        "cmdpowershell",
+        "powershell",
+        SETUP_TIMEOUT,
+    )?;
+    assert_automatic_window_name_resolves_as_target(
+        &binary,
+        &label,
+        "cmdpowershell",
+        "powershell",
+    )?;
+
+    run_rmux(
+        &binary,
+        &label,
+        ["send-keys", "-t", "cmdpowershell", "exit", "Enter"],
+    )?;
+    wait_for_window_and_current_command(&binary, &label, "cmdpowershell", "cmd", SETUP_TIMEOUT)?;
+
+    Ok(())
+}
+
+#[test]
 fn windows_explicit_cmd_shim_pane_command_runs_through_cmd_wrapper() -> Result<(), Box<dyn Error>> {
     let _serial = lock_windows_console_test();
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_rmux"));
@@ -1978,6 +2150,87 @@ fn run_rmux_output<const N: usize>(
         .into());
     }
     Ok(output)
+}
+
+fn windows_command_available(command: &str) -> bool {
+    Command::new("where.exe")
+        .arg(command)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn wait_for_window_and_current_command(
+    binary: &Path,
+    label: &str,
+    target: &str,
+    expected: &str,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + timeout;
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        let output = run_rmux_output(
+            binary,
+            label,
+            [
+                "display-message",
+                "-p",
+                "-t",
+                target,
+                "#{window_name}|#{pane_current_command}",
+            ],
+        )?;
+        last = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if last.split_once('|').is_some_and(|(window, command)| {
+            command_name_matches(window, expected) && command_name_matches(command, expected)
+        }) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("timed out waiting for window and command {expected:?}; last={last:?}"),
+    )
+    .into())
+}
+
+fn command_name_matches(actual: &str, expected: &str) -> bool {
+    actual
+        .strip_suffix(".exe")
+        .unwrap_or(actual)
+        .eq_ignore_ascii_case(expected)
+}
+
+fn assert_automatic_window_name_resolves_as_target(
+    binary: &Path,
+    label: &str,
+    session: &str,
+    expected: &str,
+) -> Result<(), Box<dyn Error>> {
+    // Resolving by name proves that the automatic rename was persisted on the
+    // window. Merely rendering #{window_name} is insufficient because that
+    // format dynamically evaluates automatic-rename-format.
+    let target = format!("{session}:{expected}");
+    let output = run_rmux_output(
+        binary,
+        label,
+        [
+            "display-message",
+            "-p",
+            "-t",
+            target.as_str(),
+            "#{window_name}",
+        ],
+    )?;
+    let actual = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    assert!(
+        command_name_matches(&actual, expected),
+        "automatic window target {target:?} resolved with name {actual:?}"
+    );
+    Ok(())
 }
 
 fn wait_for_capture_contains(

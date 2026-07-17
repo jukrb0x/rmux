@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::io;
 use std::mem::{size_of, MaybeUninit};
@@ -8,8 +8,8 @@ use std::ptr::null;
 
 use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, WAIT_FAILED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
@@ -22,7 +22,7 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
 };
 
@@ -189,6 +189,10 @@ pub(super) fn executable_path(pid: u32) -> io::Result<Option<String>> {
     }
     let _guard = WindowsHandle(handle);
 
+    executable_path_for_handle(handle).map(Some)
+}
+
+fn executable_path_for_handle(handle: HANDLE) -> io::Result<String> {
     let mut buffer = vec![0_u16; 32_768];
     let mut len = u32::try_from(buffer.len()).map_err(|_| io::ErrorKind::InvalidData)?;
     let ok = unsafe {
@@ -199,7 +203,7 @@ pub(super) fn executable_path(pid: u32) -> io::Result<Option<String>> {
         return Err(io::Error::last_os_error());
     }
     buffer.truncate(usize::try_from(len).map_err(|_| io::ErrorKind::InvalidData)?);
-    Ok(Some(wide_to_string_lossy(&buffer)))
+    Ok(wide_to_string_lossy(&buffer))
 }
 
 pub(super) fn descendant_command_names(pid: u32) -> io::Result<Vec<String>> {
@@ -220,6 +224,230 @@ pub(super) fn descendant_command_names(pid: u32) -> io::Result<Vec<String>> {
     }
 
     Ok(names)
+}
+
+pub(super) fn foreground_command_name(
+    root_pid: u32,
+    shell_name: &str,
+    process_ids: &[u32],
+) -> io::Result<Option<String>> {
+    let mut entries = Vec::with_capacity(process_ids.len());
+    let mut seen = HashSet::with_capacity(process_ids.len());
+    for &pid in process_ids {
+        if seen.insert(pid) {
+            if let Some(entry) = foreground_process_entry(pid)? {
+                entries.push(entry);
+            }
+        }
+    }
+    Ok(select_foreground_command(root_pid, shell_name, &entries))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForegroundProcessEntry {
+    pid: u32,
+    parent_pid: u32,
+    name: String,
+    creation_time: u64,
+}
+
+fn foreground_process_entry(pid: u32) -> io::Result<Option<ForegroundProcessEntry>> {
+    let handle = unsafe {
+        // SAFETY: OpenProcess validates the pid and returns either a handle or
+        // null. Synchronize access lets us reject an entry that exits between
+        // the Job Object snapshot and these metadata queries.
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid)
+    };
+    if handle.is_null() {
+        return unavailable_or_error(io::Error::last_os_error());
+    }
+    let _guard = WindowsHandle(handle);
+    if !process_handle_is_live(handle)? {
+        return Ok(None);
+    }
+    let Some(info) = query_basic_information(handle)? else {
+        return Ok(None);
+    };
+    let parent_pid = u32::try_from(info.inherited_from_unique_process_id)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "parent pid out of range"))?;
+    let path = match executable_path_for_handle(handle) {
+        Ok(path) => path,
+        Err(error) if is_process_unavailable_error(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let Some(name) = super::executable_name(&path) else {
+        return Ok(None);
+    };
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let ok = unsafe {
+        // SAFETY: `handle` is a live query handle and each FILETIME out-pointer
+        // refers to initialized writable storage for the duration of the call.
+        GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
+    };
+    if ok == 0 {
+        return unavailable_or_error(io::Error::last_os_error());
+    }
+    if !process_handle_is_live(handle)? {
+        return Ok(None);
+    }
+    Ok(Some(ForegroundProcessEntry {
+        pid,
+        parent_pid,
+        name,
+        creation_time: (u64::from(creation.dwHighDateTime) << 32)
+            | u64::from(creation.dwLowDateTime),
+    }))
+}
+
+fn process_handle_is_live(handle: HANDLE) -> io::Result<bool> {
+    let wait = unsafe {
+        // SAFETY: `handle` has SYNCHRONIZE access and a zero timeout only
+        // observes whether the process has already exited.
+        WaitForSingleObject(handle, 0)
+    };
+    match wait {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        _ => Err(io::Error::other("unexpected Windows process wait result")),
+    }
+}
+
+fn select_foreground_command(
+    root_pid: u32,
+    shell_name: &str,
+    entries: &[ForegroundProcessEntry],
+) -> Option<String> {
+    // ConPTY does not expose a general foreground-process query. Match the
+    // process-tree strategy used by other Windows multiplexers: walk the
+    // newest eligible descendant in this pane's Job Object. This is
+    // deliberately best-effort; a long-running background process that stays
+    // in the same Job can still look like the active command.
+    let root = entries.iter().find(|entry| entry.pid == root_pid)?;
+    if !executable_names_match(&root.name, shell_name) && !is_shell_executable(&root.name) {
+        return None;
+    }
+
+    let mut parent_pid = root_pid;
+    let mut visited = HashSet::from([root_pid]);
+    let mut deepest_wrapper = None;
+    loop {
+        let Some(command) = newest_child(parent_pid, entries, |entry| {
+            !is_infrastructure_executable(&entry.name) && !is_shell_helper_executable(&entry.name)
+        }) else {
+            return deepest_wrapper.and_then(|wrapper: &ForegroundProcessEntry| {
+                (!executable_names_match(&wrapper.name, &root.name))
+                    .then(|| user_visible_executable_name(&wrapper.name))
+            });
+        };
+        if !is_wrapper_executable(&command.name) {
+            return Some(user_visible_executable_name(&command.name));
+        }
+        if !visited.insert(command.pid) {
+            return None;
+        }
+        deepest_wrapper = Some(command);
+        parent_pid = command.pid;
+    }
+}
+
+fn newest_child(
+    parent_pid: u32,
+    entries: &[ForegroundProcessEntry],
+    include: impl Fn(&ForegroundProcessEntry) -> bool,
+) -> Option<&ForegroundProcessEntry> {
+    entries
+        .iter()
+        .filter(|entry| entry.parent_pid == parent_pid && include(entry))
+        .max_by_key(|entry| (entry.creation_time, entry.pid))
+}
+
+fn executable_names_match(left: &str, right: &str) -> bool {
+    executable_stem(left).eq_ignore_ascii_case(executable_stem(right))
+}
+
+fn executable_stem(name: &str) -> &str {
+    let name = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    name.rsplit_once('.')
+        .filter(|(_, extension)| extension.eq_ignore_ascii_case("exe"))
+        .map_or(name, |(stem, _)| stem)
+}
+
+fn user_visible_executable_name(name: &str) -> String {
+    executable_stem(name).to_ascii_lowercase()
+}
+
+fn is_wrapper_executable(name: &str) -> bool {
+    const WRAPPERS: &[&str] = &[
+        "bash",
+        "bunx",
+        "cmd",
+        "dash",
+        "env",
+        "fish",
+        "npm",
+        "npx",
+        "nu",
+        "pnpm",
+        "powershell",
+        "pwsh",
+        "runas",
+        "sh",
+        "sudo",
+        "yarn",
+        "zsh",
+    ];
+    WRAPPERS
+        .iter()
+        .any(|wrapper| executable_stem(name).eq_ignore_ascii_case(wrapper))
+}
+
+fn is_shell_executable(name: &str) -> bool {
+    const SHELLS: &[&str] = &[
+        "bash",
+        "cmd",
+        "dash",
+        "fish",
+        "nu",
+        "powershell",
+        "pwsh",
+        "sh",
+        "zsh",
+    ];
+    SHELLS
+        .iter()
+        .any(|shell| executable_stem(name).eq_ignore_ascii_case(shell))
+}
+
+fn is_infrastructure_executable(name: &str) -> bool {
+    const INFRASTRUCTURE: &[&str] = &[
+        "conhost",
+        "csrss",
+        "dwm",
+        "openconsole",
+        "runtimebroker",
+        "services",
+        "svchost",
+        "wininit",
+        "winlogon",
+    ];
+    INFRASTRUCTURE
+        .iter()
+        .any(|process| executable_stem(name).eq_ignore_ascii_case(process))
+}
+
+fn is_shell_helper_executable(name: &str) -> bool {
+    // These commands are invoked synchronously by this machine's Nushell
+    // startup/prompt configuration. Treating them as foreground applications
+    // makes an otherwise idle window flicker between nu, fnm, zoxide, and
+    // starship. Direct pane commands still use the runtime-name fallback.
+    const HELPERS: &[&str] = &["fnm", "starship", "zoxide"];
+    HELPERS
+        .iter()
+        .any(|helper| executable_stem(name).eq_ignore_ascii_case(helper))
 }
 
 pub(super) fn fd_path(_pid: u32, _fd: i32) -> io::Result<Option<PathBuf>> {
@@ -625,18 +853,23 @@ fn environment_block_end(block: &[u16]) -> Option<usize> {
 }
 
 fn unavailable_or_error<T>(error: io::Error) -> io::Result<Option<T>> {
-    match error.raw_os_error() {
+    if is_process_unavailable_error(&error) {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+fn is_process_unavailable_error(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
         Some(code)
             if code == ERROR_ACCESS_DENIED as i32
                 || code == ERROR_INVALID_PARAMETER as i32
                 || code == ERROR_PARTIAL_COPY
                 || code == ERROR_INVALID_ADDRESS
-                || code == ERROR_NOACCESS =>
-        {
-            Ok(None)
-        }
-        _ => Err(error),
-    }
+                || code == ERROR_NOACCESS
+    )
 }
 
 fn wide_to_string_lossy(value: &[u16]) -> String {
@@ -653,6 +886,8 @@ fn wide_nul_to_string(value: &[u16]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Command, Stdio};
+
     use super::*;
     #[cfg(windows)]
     use windows_sys::Win32::System::Memory::{
@@ -661,6 +896,177 @@ mod tests {
     };
     #[cfg(windows)]
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    fn foreground_entry(
+        pid: u32,
+        parent_pid: u32,
+        name: &str,
+        creation_time: u64,
+    ) -> ForegroundProcessEntry {
+        ForegroundProcessEntry {
+            pid,
+            parent_pid,
+            name: name.to_owned(),
+            creation_time,
+        }
+    }
+
+    #[test]
+    fn process_handle_liveness_rejects_an_exited_process_with_an_open_handle() {
+        let mut child = Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 10",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn liveness probe");
+        let handle = unsafe {
+            // SAFETY: The child pid is valid here; the returned query/sync
+            // handle is independently owned by the test.
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                0,
+                child.id(),
+            )
+        };
+        assert!(
+            !handle.is_null(),
+            "OpenProcess failed: {}",
+            io::Error::last_os_error()
+        );
+        let _guard = WindowsHandle(handle);
+
+        assert!(process_handle_is_live(handle).expect("running child state"));
+        child.kill().expect("terminate liveness probe");
+        child.wait().expect("reap liveness probe");
+        assert!(!process_handle_is_live(handle).expect("exited child state"));
+    }
+
+    #[test]
+    fn foreground_command_uses_fallback_for_idle_repeated_shell() {
+        let entries = vec![
+            foreground_entry(100, 1, "nu.exe", 1),
+            foreground_entry(101, 100, "NU.EXE", 2),
+            foreground_entry(102, 101, "conhost.exe", 3),
+        ];
+
+        assert_eq!(select_foreground_command(100, "nu", &entries), None);
+    }
+
+    #[test]
+    fn foreground_command_ignores_transient_prompt_renderer_processes() {
+        let entries = vec![
+            foreground_entry(100, 1, "nu.exe", 1),
+            foreground_entry(200, 100, "fnm.exe", 2),
+            foreground_entry(300, 100, "zoxide.exe", 3),
+            foreground_entry(400, 100, "starship.exe", 4),
+            foreground_entry(401, 400, "git.exe", 5),
+        ];
+
+        assert_eq!(select_foreground_command(100, "nu", &entries), None);
+    }
+
+    #[test]
+    fn foreground_command_walks_profile_shell_into_nu() {
+        let entries = vec![
+            foreground_entry(100, 1, "cmd.exe", 1),
+            foreground_entry(101, 100, "nu.exe", 2),
+            foreground_entry(200, 101, "lazygit.exe", 3),
+            foreground_entry(201, 200, "git.exe", 4),
+        ];
+
+        assert_eq!(
+            select_foreground_command(100, "cmd", &entries),
+            Some("lazygit".to_owned())
+        );
+    }
+
+    #[test]
+    fn foreground_command_walks_multiple_shell_wrappers() {
+        let entries = vec![
+            foreground_entry(100, 1, "cmd.exe", 1),
+            foreground_entry(101, 100, "nu.exe", 2),
+            foreground_entry(200, 101, "cmd.exe", 3),
+            foreground_entry(201, 200, "PING.EXE", 4),
+        ];
+
+        assert_eq!(
+            select_foreground_command(100, "cmd", &entries),
+            Some("ping".to_owned())
+        );
+    }
+
+    #[test]
+    fn foreground_command_allows_direct_known_shell_root() {
+        let entries = vec![
+            foreground_entry(100, 1, "nu.exe", 1),
+            foreground_entry(200, 100, "lazygit.exe", 2),
+        ];
+
+        assert_eq!(
+            select_foreground_command(100, "cmd", &entries),
+            Some("lazygit".to_owned())
+        );
+    }
+
+    #[test]
+    fn foreground_command_selects_app_but_not_its_helper() {
+        let entries = vec![
+            foreground_entry(100, 1, "nu.exe", 1),
+            foreground_entry(101, 100, "nu.exe", 2),
+            foreground_entry(200, 101, "lazygit.exe", 3),
+            foreground_entry(201, 200, "git.exe", 4),
+        ];
+
+        assert_eq!(
+            select_foreground_command(100, "nu.exe", &entries),
+            Some("lazygit".to_owned())
+        );
+    }
+
+    #[test]
+    fn foreground_command_skips_one_known_wrapper() {
+        let entries = vec![
+            foreground_entry(100, 1, "nu.exe", 1),
+            foreground_entry(200, 100, "cmd.exe", 2),
+            foreground_entry(201, 200, "PING.EXE", 3),
+        ];
+
+        assert_eq!(
+            select_foreground_command(100, "nu", &entries),
+            Some("ping".to_owned())
+        );
+    }
+
+    #[test]
+    fn foreground_command_does_not_descend_from_explicit_command_root() {
+        let entries = vec![
+            foreground_entry(100, 1, "lazygit.exe", 1),
+            foreground_entry(200, 100, "git.exe", 2),
+        ];
+
+        assert_eq!(select_foreground_command(100, "nu", &entries), None);
+    }
+
+    #[test]
+    fn foreground_command_uses_creation_time_not_pid_for_siblings() {
+        let entries = vec![
+            foreground_entry(100, 1, "nu.exe", 1),
+            foreground_entry(300, 100, "older.exe", 10),
+            foreground_entry(200, 100, "newer.exe", 20),
+        ];
+
+        assert_eq!(
+            select_foreground_command(100, "nu", &entries),
+            Some("newer".to_owned())
+        );
+    }
 
     #[test]
     fn process_job_breakaway_is_explicit_and_preserves_kill_on_close() {
