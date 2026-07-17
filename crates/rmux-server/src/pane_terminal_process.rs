@@ -72,6 +72,16 @@ impl PaneTerminal {
         self.child.pid().as_u32()
     }
 
+    #[cfg(windows)]
+    pub(crate) fn process_ids(&self) -> rmux_pty::Result<Vec<u32>> {
+        self.child.process_ids().map(|process_ids| {
+            process_ids
+                .into_iter()
+                .map(rmux_pty::ProcessId::as_u32)
+                .collect()
+        })
+    }
+
     #[cfg(unix)]
     pub(crate) fn tty_path(&self) -> Option<PathBuf> {
         rmux_os::process::fd_path(self.pid(), 0)

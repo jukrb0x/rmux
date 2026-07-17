@@ -77,6 +77,17 @@ impl ProcessInspector {
     pub fn descendant_command_names(&self, pid: u32) -> io::Result<Vec<String>> {
         descendant_command_names_impl(pid)
     }
+
+    /// Returns the foreground command selected from a Windows pane job.
+    #[cfg(windows)]
+    pub fn foreground_command_name(
+        &self,
+        root_pid: u32,
+        shell_name: &str,
+        process_ids: &[u32],
+    ) -> io::Result<Option<String>> {
+        foreground_command_name_impl(root_pid, shell_name, process_ids)
+    }
 }
 
 /// Returns the parent process id for `pid`, when available.
@@ -138,6 +149,20 @@ pub fn descendant_command_names(pid: u32) -> Vec<String> {
     ProcessInspector
         .descendant_command_names(pid)
         .unwrap_or_default()
+}
+
+/// Returns the foreground command selected from a Windows pane job.
+#[cfg(windows)]
+#[must_use]
+pub fn foreground_command_name(
+    root_pid: u32,
+    shell_name: &str,
+    process_ids: &[u32],
+) -> Option<String> {
+    ProcessInspector
+        .foreground_command_name(root_pid, shell_name, process_ids)
+        .ok()
+        .flatten()
 }
 
 /// Unix-only process helpers.
@@ -463,6 +488,15 @@ fn raw_environment_impl(pid: u32) -> io::Result<Option<Vec<(OsString, OsString)>
 #[cfg(windows)]
 fn descendant_command_names_impl(pid: u32) -> io::Result<Vec<String>> {
     windows_process::descendant_command_names(pid)
+}
+
+#[cfg(windows)]
+fn foreground_command_name_impl(
+    root_pid: u32,
+    shell_name: &str,
+    process_ids: &[u32],
+) -> io::Result<Option<String>> {
+    windows_process::foreground_command_name(root_pid, shell_name, process_ids)
 }
 
 #[cfg(target_os = "macos")]

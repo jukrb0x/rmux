@@ -77,28 +77,37 @@ impl RuntimeFormatContext<'_> {
         let session_name = self.session_name()?;
         let window_index = self.window_index?;
         let pane = self.pane?;
-        state
+        let runtime_name = state
             .pane_runtime_window_name_in_window(session_name, window_index, pane.index())
             .ok()
-            .flatten()
-            .or_else(|| {
+            .flatten();
+        let pane_pid = state
+            .pane_pid_in_window(session_name, window_index, pane.index())
+            .ok();
+        let shell_name = state
+            .pane_profile_in_window(session_name, window_index, pane.index())
+            .ok()
+            .and_then(|profile| {
+                profile
+                    .shell()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            });
+        let foreground_name = pane_pid
+            .zip(shell_name.as_deref())
+            .and_then(|(pid, shell)| {
                 state
-                    .pane_pid_in_window(session_name, window_index, pane.index())
+                    .pane_process_ids_in_window(session_name, window_index, pane.index())
                     .ok()
-                    .and_then(process::command_name)
-            })
-            .or_else(|| {
-                state
-                    .pane_profile_in_window(session_name, window_index, pane.index())
-                    .ok()
-                    .and_then(|profile| {
-                        profile
-                            .shell()
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .map(str::to_owned)
+                    .and_then(|process_ids| {
+                        process::foreground_command_name(pid, shell, &process_ids)
                     })
-            })
+            });
+        foreground_name
+            .or(runtime_name)
+            .or_else(|| pane_pid.and_then(process::command_name))
+            .or(shell_name)
     }
 
     #[cfg(unix)]

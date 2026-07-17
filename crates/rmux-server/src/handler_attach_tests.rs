@@ -41,21 +41,17 @@ fn session_name(value: &str) -> SessionName {
 }
 
 #[cfg(unix)]
-fn default_shell_window_name() -> String {
+fn quiet_session_window_name() -> String {
     "bash".to_owned()
 }
 
 #[cfg(windows)]
-fn default_shell_window_name() -> String {
-    std::env::var_os("COMSPEC")
-        .and_then(|shell| Path::new(&shell).file_name().map(|name| name.to_owned()))
-        .map(|name| name.to_string_lossy().trim_start_matches('-').to_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "cmd.exe".to_owned())
+fn quiet_session_window_name() -> String {
+    "ping".to_owned()
 }
 
-fn default_shell_pane_status() -> String {
-    format!("{}|0|\n", default_shell_window_name())
+fn quiet_session_pane_status() -> String {
+    format!("{}|0|\n", quiet_session_window_name())
 }
 
 fn take_render_frame(control: AttachControl) -> String {

@@ -183,6 +183,13 @@ impl PtyChild {
         self.pid
     }
 
+    /// Returns the active process identifiers owned by this child's Windows
+    /// Job Object, including descendants.
+    #[cfg(windows)]
+    pub fn process_ids(&self) -> Result<Vec<ProcessId>> {
+        self.child.process_ids()
+    }
+
     /// Waits for the child process to exit and reaps it.
     pub fn wait(&mut self) -> Result<ExitStatus> {
         #[cfg(unix)]
