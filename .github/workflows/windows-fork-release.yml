@@ -164,17 +164,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          function Run([string]$Program, [string[]]$Arguments) {
-            & $Program @Arguments
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-
-          Run "./scripts/package-windows.ps1" @(
-            "-Configuration", "release",
-            "-Target", "x86_64-pc-windows-msvc",
-            "-PlatformLabel", "windows-x86_64",
-            "-OutputDir", "dist"
-          )
+          ./scripts/package-windows.ps1 `
+            -Configuration release `
+            -Target x86_64-pc-windows-msvc `
+            -PlatformLabel windows-x86_64 `
+            -OutputDir dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $archives = @(Get-ChildItem -LiteralPath dist -Filter "rmux-*-windows-x86_64.zip")
           if ($archives.Count -ne 1) {
@@ -186,13 +181,14 @@ jobs:
             throw "Expected $expectedName, found $($archive.Name)."
           }
 
-          Run "./scripts/verify-package-windows.ps1" @(
-            $archive.FullName,
-            "-Checksums", "dist/SHA256SUMS.txt",
-            "-RunBinary",
-            "-RunDaemonSmoke",
-            "-RequireReleaseArtifact"
-          )
+          ./scripts/verify-package-windows.ps1 `
+            -Archive $archive.FullName `
+            -Checksums dist/SHA256SUMS.txt `
+            -RunBinary `
+            -RunDaemonSmoke `
+            -RequireReleaseArtifact `
+            -ExpectedGitSha $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           Copy-Item -LiteralPath dist/SHA256SUMS.txt -Destination dist/SHA256SUMS
           "ARCHIVE_PATH=$($archive.FullName)" >> $env:GITHUB_ENV

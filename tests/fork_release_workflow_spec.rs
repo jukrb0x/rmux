@@ -90,6 +90,51 @@ fn fork_release_is_windows_only_immutable_and_tmux_bound() {
 }
 
 #[test]
+fn fork_release_package_layout_invokes_powershell_scripts_with_named_parameters() {
+    let workflow = repo_file(".github/workflows/windows-fork-release.yml");
+    let package_layout = indented_block(
+        &workflow,
+        "- name: Build and verify supported package layout",
+        6,
+    );
+    let package_commands = package_layout
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for direct_invocation in [
+        r#"./scripts/package-windows.ps1 `
+-Configuration release `
+-Target x86_64-pc-windows-msvc `
+-PlatformLabel windows-x86_64 `
+-OutputDir dist"#,
+        r#"./scripts/verify-package-windows.ps1 `
+-Archive $archive.FullName `
+-Checksums dist/SHA256SUMS.txt `
+-RunBinary `
+-RunDaemonSmoke `
+-RequireReleaseArtifact `
+-ExpectedGitSha $env:GITHUB_SHA"#,
+    ] {
+        assert!(
+            package_commands.contains(direct_invocation),
+            "package-layout step must invoke PowerShell scripts directly with named parameters:\n{direct_invocation}"
+        );
+    }
+
+    for wrapped_invocation in [
+        r#"Run "./scripts/package-windows.ps1""#,
+        r#"Run "./scripts/verify-package-windows.ps1""#,
+    ] {
+        assert!(
+            !package_layout.contains(wrapped_invocation),
+            "package-layout step must not pass PowerShell script parameters through Run: {wrapped_invocation}"
+        );
+    }
+}
+
+#[test]
 fn inherited_release_push_trigger_excludes_personal_tags_after_the_public_pattern() {
     let release = repo_file(".github/workflows/release.yml");
     let push = push_trigger(&release);
