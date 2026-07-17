@@ -317,6 +317,27 @@ impl PaneTerminalStore {
         Ok(terminal.pid())
     }
 
+    #[cfg(windows)]
+    pub(super) fn pane_process_ids(
+        &self,
+        session_name: &SessionName,
+        pane_id: PaneId,
+        window_index: u32,
+        pane_index: u32,
+    ) -> Result<Vec<u32>, RmuxError> {
+        let terminal = self
+            .sessions
+            .get(session_name)
+            .and_then(|panes| panes.get(&pane_id))
+            .ok_or_else(|| missing_pane_terminal(session_name, window_index, pane_index))?;
+        terminal.process_ids().map_err(|error| {
+            RmuxError::Server(format!(
+                "failed to inspect pane processes for {}:{window_index}.{pane_index}: {error}",
+                session_name,
+            ))
+        })
+    }
+
     #[cfg(unix)]
     pub(super) fn pane_tty_path(
         &self,
