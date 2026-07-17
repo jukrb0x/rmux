@@ -1666,3 +1666,78 @@ async fn status_right_click_routes_window_menu_to_clicked_window_target() {
         Target::Window(WindowTarget::with_window(alpha, 0))
     );
 }
+
+#[tokio::test]
+async fn status_left_click_uses_explicit_status_format_window_ranges() {
+    let handler = RequestHandler::new();
+    let alpha = session_name("status-left-explicit");
+    let requester_pid = std::process::id();
+    let _control_rx = create_attached_session(&handler, &alpha, requester_pid).await;
+    enable_mouse(&handler).await;
+
+    run_overlay_command(&handler, requester_pid, "new-window -d").await;
+    run_overlay_command(
+        &handler,
+        requester_pid,
+        r##"set -g status-format[0] "#[align=left range=left]#{T:status-left}#[norange]#[list=on align=left]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#{l:#[range=window|}#{s/@//:window_id}]#[none fg=#8a8a8a bg=#080808]#{?window_last_flag,#[fg=#00afff bg=#303030],} #{window_index} #{window_name} #[norange list=on],#{l:#[range=window|}#{s/@//:window_id}]#[list=focus none fg=#080808 bg=#00afff bold] #{window_index} #{window_name} #[norange list=on]}#[nolist align=right range=right]#{T:status-right}#[norange]""##,
+    )
+    .await;
+    let rebound = handler
+        .handle(Request::BindKey(Box::new(BindKeyRequest {
+            table_name: "root".to_owned(),
+            key: "MouseDown1Status".to_owned(),
+            note: Some("select-status-window-directly".to_owned()),
+            repeat: false,
+            command: Some(vec![
+                "select-window".to_owned(),
+                "-t".to_owned(),
+                "=".to_owned(),
+            ]),
+        })))
+        .await;
+    assert!(matches!(rebound, Response::BindKey(_)));
+
+    let (click_x, click_y) = {
+        let state = handler.state.lock().await;
+        let session = state.sessions.session(&alpha).expect("session exists");
+        let target_window_id = session
+            .window_at(1)
+            .expect("second window exists")
+            .id()
+            .as_u32();
+        let layout = layout_for_session(&state, &alpha, 1).expect("mouse layout");
+        let status = layout.status.as_ref().expect("status layout");
+        let range = status
+            .ranges
+            .iter()
+            .find(|range| {
+                matches!(range.kind, StatusRangeType::Window(id) if id == target_window_id)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "second window status range missing: target id={target_window_id}, ranges={:#?}",
+                    status.ranges
+                )
+            });
+        (
+            *range.x.start(),
+            layout.status_at.expect("status line position"),
+        )
+    };
+
+    handler
+        .handle_attached_live_input_for_test(requester_pid, &sgr_mouse(0, click_x, click_y))
+        .await
+        .expect("status mouse input");
+
+    let state = handler.state.lock().await;
+    let active_window = state
+        .sessions
+        .session(&alpha)
+        .expect("session exists")
+        .active_window_index();
+    assert_eq!(
+        active_window, 1,
+        "clicking the second status tab should select it"
+    );
+}
