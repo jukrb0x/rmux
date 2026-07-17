@@ -4,7 +4,7 @@ on:
   branch_protection_rule:
   push:
     branches:
-      - main
+      - tmux
   schedule:
     - cron: "20 7 * * 1"
   workflow_dispatch:

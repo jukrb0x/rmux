@@ -3,12 +3,13 @@ name: CI
 on:
   push:
     branches:
-      - main
+      - tmux
     tags:
       - "v*"
+      - "!v*-jukrb0x.*"
   pull_request:
     branches:
-      - main
+      - tmux
   workflow_dispatch:
     inputs:
       windows_runtime_smoke:
