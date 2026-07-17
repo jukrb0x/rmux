@@ -215,6 +215,7 @@ pub(super) fn status_bar_lines(
     columns: u16,
     attached_count: usize,
     status_lines: u16,
+    state: Option<&HandlerState>,
 ) -> Vec<FormattedLine> {
     status_bar_lines_with_pane_title(
         session,
@@ -223,6 +224,7 @@ pub(super) fn status_bar_lines(
         status_lines,
         StatusLineContext {
             attached_count,
+            state,
             ..StatusLineContext::default()
         },
     )
