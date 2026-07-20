@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+      # PERSONAL FORK: Analyze the fork's default branch as well as upstream main.
+      - tmux
   schedule:
     - cron: "20 7 * * 1"
   workflow_dispatch:

@@ -4,9 +4,13 @@ on:
   push:
     branches:
       - main
+      # PERSONAL FORK: Run inherited CI on the fork's default branch.
+      - tmux
   pull_request:
     branches:
       - main
+      # PERSONAL FORK: Validate pull requests targeting the fork's default branch.
+      - tmux
   workflow_dispatch:
     inputs:
       windows_runtime_smoke:
