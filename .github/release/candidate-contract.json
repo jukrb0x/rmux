@@ -354,6 +354,7 @@
     ".github/workflows/release-tag-authoring.yml",
     ".github/workflows/release.yml",
     ".github/workflows/scorecard.yml",
+    ".github/workflows/windows-fork-release.yml",
     "CHANGELOG.md",
     "Cargo.lock",
     "Cargo.toml",
