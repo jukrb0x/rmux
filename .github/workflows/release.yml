@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+      # PERSONAL FORK: Reserve personal tags for the fork-only release workflow.
+      - "!v*-jukrb0x.*"
   workflow_dispatch:
     inputs:
       ref:
@@ -43,6 +45,17 @@ jobs:
       RUST_MIN_STACK: "8388608"
       RUST_TEST_THREADS: "1"
     steps:
+      - name: Reject personal fork release tags
+        # PERSONAL FORK: Fail closed before validation, checkout, or source work.
+        shell: pwsh
+        run: |
+          foreach ($candidate in @($env:GITHUB_REF, $env:RELEASE_REF)) {
+            $tag = $candidate -replace '^refs/tags/', ''
+            if ($tag -like 'v*-jukrb0x.*') {
+              throw "Personal fork tag $tag must use the fork-only release workflow."
+            }
+          }
+
       - name: Validate release event ref
         shell: bash
         run: |

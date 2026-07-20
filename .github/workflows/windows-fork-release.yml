@@ -1,0 +1,213 @@
+# PERSONAL FORK: Build and publish Windows-only rmux releases from the tmux branch.
+name: Fork Windows release
+
+on:
+  push:
+    tags:
+      - "v*-jukrb0x.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
+
+jobs:
+  build:
+    name: Build and verify personal Windows package
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: "1.96.1"
+
+      - name: Validate release event and source
+        shell: pwsh
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          git fetch --no-tags origin "+refs/heads/tmux:refs/remotes/origin/tmux"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to fetch origin/tmux." }
+
+          $head = (git rev-parse HEAD).Trim()
+          $tmuxCommit = (git rev-parse refs/remotes/origin/tmux).Trim()
+
+          $inWorkspacePackage = $false
+          $version = $null
+          foreach ($line in Get-Content -LiteralPath Cargo.toml) {
+            if ($line -match '^\[workspace\.package\]$') { $inWorkspacePackage = $true; continue }
+            if ($line -match '^\[') { $inWorkspacePackage = $false }
+            if ($inWorkspacePackage -and $line -match '^\s*version\s*=\s*"([^"]+)"') {
+              $version = $Matches[1]
+              break
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) { throw "Unable to read workspace package version." }
+
+          if ($env:RELEASE_EVENT -eq "workflow_dispatch") {
+            if ($env:GITHUB_REF -ne "refs/heads/tmux") { throw "Manual validation must run from tmux." }
+            if ($head -ne $tmuxCommit) { throw "Manual validation must match the current remote tmux head." }
+            $buildId = $head
+          } elseif ($env:RELEASE_EVENT -eq "push") {
+            $tag = $env:GITHUB_REF_NAME
+            if ($env:RELEASE_REF_TYPE -ne "tag") { throw "Push releases must run from a tag ref." }
+            if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-jukrb0x\.[1-9][0-9]*$') {
+              throw "Invalid personal release tag: $tag"
+            }
+            $tagCommit = (git rev-parse "$tag^{commit}").Trim()
+            if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $head) {
+              throw "Tag $tag does not resolve to checked-out HEAD $head."
+            }
+            git merge-base --is-ancestor $tagCommit refs/remotes/origin/tmux
+            if ($LASTEXITCODE -ne 0) { throw "Tag $tag is not reachable from tmux." }
+            $expectedTag = "^v$([regex]::Escape($version))-jukrb0x\.[1-9][0-9]*$"
+            if ($tag -notmatch $expectedTag) { throw "Tag $tag does not match Cargo version $version." }
+            "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+            $buildId = $tag
+          } else {
+            throw "Unsupported release event: $($env:RELEASE_EVENT)"
+          }
+
+          "PACKAGE_VERSION=$version" >> $env:GITHUB_ENV
+          "BUILD_ID=$buildId" >> $env:GITHUB_ENV
+
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: cargo-${{ runner.os }}-fork-windows-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-fork-windows-
+
+      - name: Run fork regression tests
+        shell: pwsh
+        env:
+          RMUX_ALLOW_INTERNAL_DAEMON_IN_CALLER_JOB: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Run([string]$Program, [string[]]$Arguments) {
+            & $Program @Arguments
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          Run "./scripts/assert-cargo-filter-nonempty.ps1" @(
+            "9", "--", "test", "-p", "rmux-os", "--lib", "--locked", "foreground_command_"
+          )
+          Run "cargo" @(
+            "test", "-p", "rmux-os", "--lib", "--locked", "foreground_command_", "--", "--test-threads=1"
+          )
+          Run "./scripts/assert-cargo-filter-nonempty.ps1" @(
+            "1", "--", "test", "-p", "rmux-os", "--lib", "--locked",
+            "process_handle_liveness_rejects_an_exited_process_with_an_open_handle"
+          )
+          Run "cargo" @(
+            "test", "-p", "rmux-os", "--lib", "--locked",
+            "process_handle_liveness_rejects_an_exited_process_with_an_open_handle",
+            "--", "--test-threads=1"
+          )
+          Run "./scripts/assert-cargo-filter-nonempty.ps1" @(
+            "1", "--", "test", "-p", "rmux-pty", "--lib", "--locked",
+            "job_object_lists_active_root_and_descendant_processes"
+          )
+          Run "cargo" @(
+            "test", "-p", "rmux-pty", "--lib", "--locked",
+            "job_object_lists_active_root_and_descendant_processes",
+            "--", "--test-threads=1"
+          )
+          Run "./scripts/assert-cargo-filter-nonempty.ps1" @(
+            "1", "--", "test", "-p", "rmux-server", "--lib", "--locked",
+            "status_left_click_uses_explicit_status_format_window_ranges"
+          )
+          Run "cargo" @(
+            "test", "-p", "rmux-server", "--lib", "--locked",
+            "status_left_click_uses_explicit_status_format_window_ranges",
+            "--", "--test-threads=1"
+          )
+          Run "./scripts/assert-cargo-filter-nonempty.ps1" @(
+            "1", "--", "test", "-p", "rmux", "--locked", "--test",
+            "windows_attach_exit",
+            "windows_cmd_ping_updates_current_command_and_automatic_name_until_exit"
+          )
+          Run "cargo" @(
+            "test", "-p", "rmux", "--locked", "--test", "windows_attach_exit",
+            "windows_cmd_ping_updates_current_command_and_automatic_name_until_exit",
+            "--", "--exact", "--test-threads=1"
+          )
+
+      - name: Build and verify supported package layout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/package-windows.ps1 `
+            -Configuration release `
+            -Target x86_64-pc-windows-msvc `
+            -PlatformLabel windows-x86_64 `
+            -OutputDir dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $archives = @(Get-ChildItem -LiteralPath dist -Filter "rmux-*-windows-x86_64.zip")
+          if ($archives.Count -ne 1) {
+            throw "Expected exactly one Windows package, found $($archives.Count)."
+          }
+          $archive = $archives[0]
+          $expectedName = "rmux-$env:PACKAGE_VERSION-windows-x86_64.zip"
+          if ($archive.Name -ne $expectedName) {
+            throw "Expected $expectedName, found $($archive.Name)."
+          }
+
+          ./scripts/verify-package-windows.ps1 `
+            -Archive $archive.FullName `
+            -Checksums dist/SHA256SUMS.txt `
+            -RunBinary `
+            -RunDaemonSmoke `
+            -RequireReleaseArtifact `
+            -ExpectedGitSha $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Copy-Item -LiteralPath dist/SHA256SUMS.txt -Destination dist/SHA256SUMS
+          "ARCHIVE_PATH=$($archive.FullName)" >> $env:GITHUB_ENV
+          "ARCHIVE_NAME=$($archive.Name)" >> $env:GITHUB_ENV
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rmux-${{ env.BUILD_ID }}-windows-x86_64
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish immutable fork release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & gh release create $env:RELEASE_TAG `
+            $env:ARCHIVE_PATH `
+            dist/SHA256SUMS `
+            --repo jukrb0x/rmux `
+            --verify-tag `
+            --title "RMUX $env:RELEASE_TAG" `
+            --notes "Personal Windows RMUX build from the tmux branch."
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
