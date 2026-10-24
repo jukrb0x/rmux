@@ -263,19 +263,23 @@ fn windows_nu_lazygit_updates_current_command_and_automatic_name_until_exit(
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_rmux"));
     let label = unique_label("win-nu-lazygit-title");
     let _guard = RmuxServerGuard::new(&binary, label.clone());
-    let start = Command::new(&binary)
-        .arg("-L")
-        .arg(&label)
-        .arg("start-server")
-        .env("RMUX_ALLOW_INTERNAL_DAEMON_IN_CALLER_JOB", "1")
-        .status()?;
-    assert!(start.success(), "start-server failed with {start}");
     run_rmux(
         &binary,
         &label,
-        ["set-option", "-g", "default-command", "nu"],
+        [
+            "start-server",
+            ";",
+            "set-option",
+            "-g",
+            "default-command",
+            "nu",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "nutitle",
+        ],
     )?;
-    run_rmux(&binary, &label, ["new-session", "-d", "-s", "nutitle"])?;
 
     wait_for_window_and_current_command(&binary, &label, "nutitle", "nu", SETUP_TIMEOUT)?;
     run_rmux(
@@ -305,19 +309,23 @@ fn windows_cmd_ping_updates_current_command_and_automatic_name_until_exit(
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_rmux"));
     let label = unique_label("win-cmd-ping-title");
     let _guard = RmuxServerGuard::new(&binary, label.clone());
-    let start = Command::new(&binary)
-        .arg("-L")
-        .arg(&label)
-        .arg("start-server")
-        .env("RMUX_ALLOW_INTERNAL_DAEMON_IN_CALLER_JOB", "1")
-        .status()?;
-    assert!(start.success(), "start-server failed with {start}");
     run_rmux(
         &binary,
         &label,
-        ["set-option", "-g", "default-command", "cmd.exe"],
+        [
+            "start-server",
+            ";",
+            "set-option",
+            "-g",
+            "default-command",
+            "cmd.exe",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "cmdtitle",
+        ],
     )?;
-    run_rmux(&binary, &label, ["new-session", "-d", "-s", "cmdtitle"])?;
 
     wait_for_window_and_current_command(&binary, &label, "cmdtitle", "cmd", SETUP_TIMEOUT)?;
     run_rmux(
@@ -350,22 +358,22 @@ fn windows_cmd_nested_powershell_becomes_current_command_until_exit() -> Result<
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_rmux"));
     let label = unique_label("win-cmd-powershell-title");
     let _guard = RmuxServerGuard::new(&binary, label.clone());
-    let start = Command::new(&binary)
-        .arg("-L")
-        .arg(&label)
-        .arg("start-server")
-        .env("RMUX_ALLOW_INTERNAL_DAEMON_IN_CALLER_JOB", "1")
-        .status()?;
-    assert!(start.success(), "start-server failed with {start}");
     run_rmux(
         &binary,
         &label,
-        ["set-option", "-g", "default-command", "cmd.exe"],
-    )?;
-    run_rmux(
-        &binary,
-        &label,
-        ["new-session", "-d", "-s", "cmdpowershell"],
+        [
+            "start-server",
+            ";",
+            "set-option",
+            "-g",
+            "default-command",
+            "cmd.exe",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            "cmdpowershell",
+        ],
     )?;
 
     wait_for_window_and_current_command(&binary, &label, "cmdpowershell", "cmd", SETUP_TIMEOUT)?;

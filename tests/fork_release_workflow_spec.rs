@@ -64,7 +64,7 @@ fn fork_release_is_windows_only_immutable_and_tmux_bound() {
         "assert-cargo-filter-nonempty.ps1",
         "foreground_command_",
         "windows_cmd_ping_updates_current_command_and_automatic_name_until_exit",
-        "status_left_click_uses_explicit_status_format_window_ranges",
+        "status_right_click_routes_window_menu_to_clicked_window_target",
         "scripts/package-windows.ps1",
         "scripts/verify-package-windows.ps1",
         "SHA256SUMS",
@@ -265,11 +265,7 @@ fn inherited_ci_and_scorecard_target_tmux_and_preserve_main() {
     let ci_pull_request = indented_block(&ci_on, "pull_request:", 2);
     let scorecard_push = push_trigger(&scorecard);
 
-    assert_eq!(
-        indented_list(&ci_push, "tags:", 4),
-        ["- \"v*\"", "- \"!v*-jukrb0x.*\""],
-        "upstream CI tags must exclude personal release tags"
-    );
+    assert!(!ci_push.lines().any(|line| line == "    tags:"));
     assert_eq!(
         indented_list(&ci_push, "branches:", 4),
         ["- main", "- tmux"],

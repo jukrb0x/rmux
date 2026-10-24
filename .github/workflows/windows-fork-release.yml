@@ -135,11 +135,11 @@ jobs:
           )
           Run "./scripts/assert-cargo-filter-nonempty.ps1" @(
             "1", "--", "test", "-p", "rmux-server", "--lib", "--locked",
-            "status_left_click_uses_explicit_status_format_window_ranges"
+            "status_right_click_routes_window_menu_to_clicked_window_target"
           )
           Run "cargo" @(
             "test", "-p", "rmux-server", "--lib", "--locked",
-            "status_left_click_uses_explicit_status_format_window_ranges",
+            "status_right_click_routes_window_menu_to_clicked_window_target",
             "--", "--test-threads=1"
           )
           Run "./scripts/assert-cargo-filter-nonempty.ps1" @(
