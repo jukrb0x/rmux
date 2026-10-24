@@ -26,12 +26,11 @@ Execute inline in the existing isolated worktree; preserve the old fork branch.
 3. Verify the resulting fork with the managed RMUX configuration and a fresh
    Yazi process with YAZI_FILE_ONE set. Review the complete patch before publishing
    or installing. Update chezmoi's pin only after a verified release exists.
-4. User diagnostics confirm Yazi selects Sixel inside RMUX, while RMUX's client
-   feature list omits it. Advertise Sixel for Windows Terminal in the shared CLI
-   capability detector and its server fallback. Extend their existing tests;
-   leave non-Windows-Terminal capability lists unchanged. Document the supported
-   Windows Terminal minimum (1.22.10352.0). Verify protocol bytes across a Windows
-   ConPTY attach before claiming preview repair.
+4. User diagnostics confirm Yazi selects Sixel inside RMUX. A direct ConPTY
+   producer test drops SIXEL independently of RMUX, so leave graphics capability
+   detection unchanged. In chezmoi's Windows RMUX config, clear the inherited
+   outer WT_SESSION marker only inside panes. Verify that Yazi selects Chafa
+   and draws the supplied PNG in a fresh pane. Keep native preview outside RMUX.
 
 ## Review focus
 
