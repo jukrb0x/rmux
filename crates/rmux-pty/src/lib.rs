@@ -67,6 +67,19 @@ pub use windows_console_input::{
 /// A crate-local result type for PTY operations.
 pub type Result<T> = std::result::Result<T, PtyError>;
 
+/// Whether this process uses the bundled Microsoft ConPTY runtime.
+#[must_use]
+pub fn bundled_conpty_available() -> bool {
+    #[cfg(windows)]
+    {
+        backend::bundled_conpty_available()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 /// A platform-neutral process identifier for PTY children.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct ProcessId(u32);

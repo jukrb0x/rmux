@@ -35,13 +35,18 @@ pub(crate) fn apply_detected_client_terminal_features(context: &mut ClientTermin
     apply_windows_terminal_features(
         context,
         std::env::var_os("WT_SESSION").is_some_and(|value| !value.is_empty()),
+        rmux_pty::bundled_conpty_available(),
     );
     #[cfg(not(windows))]
     let _ = context;
 }
 
 #[cfg(windows)]
-fn apply_windows_terminal_features(context: &mut ClientTerminalContext, is_windows_terminal: bool) {
+fn apply_windows_terminal_features(
+    context: &mut ClientTerminalContext,
+    is_windows_terminal: bool,
+    native_conpty: bool,
+) {
     // rmux always drives the outer terminal as VT on Windows — a console outer
     // runs with ENABLE_VIRTUAL_TERMINAL_PROCESSING and a pipe outer is raw VT —
     // so advertise the base VT feature set for any outer, not only Windows
@@ -67,6 +72,9 @@ fn apply_windows_terminal_features(context: &mut ClientTerminalContext, is_windo
     // are inferred from the console code page / locale elsewhere.
     if is_windows_terminal {
         context.utf8 = true;
+        if native_conpty {
+            push_unique_terminal_feature(&mut context.terminal_features, "sixel");
+        }
     }
 }
 
@@ -112,12 +120,12 @@ mod tests {
     fn windows_terminal_advertises_vt_features_and_utf8() {
         let mut context = rmux_proto::ClientTerminalContext::default();
 
-        super::apply_windows_terminal_features(&mut context, true);
+        super::apply_windows_terminal_features(&mut context, true, true);
 
         assert!(context.utf8);
         assert_eq!(
             context.terminal_features,
-            vec!["sync", "bpaste", "mouse", "clipboard", "title"]
+            vec!["sync", "bpaste", "mouse", "clipboard", "title", "sixel"]
         );
     }
 
@@ -130,7 +138,7 @@ mod tests {
         // UTF-8); the console code page decides it elsewhere.
         let mut context = rmux_proto::ClientTerminalContext::default();
 
-        super::apply_windows_terminal_features(&mut context, false);
+        super::apply_windows_terminal_features(&mut context, false, true);
 
         assert!(!context.utf8);
         assert_eq!(
@@ -147,12 +155,24 @@ mod tests {
             utf8: false,
         };
 
-        super::apply_windows_terminal_features(&mut context, true);
+        super::apply_windows_terminal_features(&mut context, true, true);
 
         assert!(context.utf8);
         assert_eq!(
             context.terminal_features,
-            vec!["SYNC", "BPASTE", "MOUSE", "clipboard", "title"]
+            vec!["SYNC", "BPASTE", "MOUSE", "clipboard", "title", "sixel"]
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_terminal_without_bundled_runtime_does_not_advertise_sixel() {
+        let mut context = rmux_proto::ClientTerminalContext::default();
+        super::apply_windows_terminal_features(&mut context, true, false);
+        assert!(context.utf8);
+        assert!(!context
+            .terminal_features
+            .iter()
+            .any(|feature| feature == "sixel"));
     }
 }

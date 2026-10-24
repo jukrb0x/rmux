@@ -286,11 +286,14 @@ function Get-LocalPackageRoot {
 }
 
 function Verify-InstalledLayout([string]$RmuxBinary) {
-    $result = Invoke-NativeCapture $RmuxBinary @("--help")
-    $output = $result.Output -join "`n"
-    if (($result.Status -ne 0 -and $result.Status -ne 1) -or
-        $output -notmatch 'usage: rmux') {
-        Fail "installed rmux could not reach its full CLI helper`n$output"
+    $helper = Join-Path (Split-Path -Parent (Split-Path -Parent $RmuxBinary)) "libexec/rmux/rmux.exe"
+    foreach ($binary in @($RmuxBinary, $helper)) {
+        $result = Invoke-NativeCapture $binary @("--help")
+        $output = $result.Output -join "`n"
+        if (($result.Status -ne 0 -and $result.Status -ne 1) -or
+            $output -notmatch 'usage: rmux') {
+            Fail "installed rmux could not reach its full CLI helper: $binary`n$output"
+        }
     }
 }
 
@@ -320,6 +323,17 @@ function Install-PackageRoot([string]$PackageRoot, [string]$DestinationBin, [boo
         }
     )
 
+    $runtimePlan = @()
+    foreach ($layout in @(@{ Source = $PackageRoot; Target = $installBin }, @{ Source = (Join-Path $PackageRoot "libexec/rmux"); Target = (Join-Path $installRoot "libexec/rmux") })) {
+        if ((Test-Path (Join-Path $layout.Source "conpty.dll")) -or (Test-Path (Join-Path $layout.Source "OpenConsole.exe"))) {
+            foreach ($name in @("conpty.dll", "OpenConsole.exe")) {
+                $source = Join-Path $layout.Source $name
+                if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { Fail "paired ConPTY runtime is missing $source" }
+                $runtimePlan += [pscustomobject]@{ Source = $source; Destination = (Join-Path $layout.Target $name) }
+            }
+        }
+    }
+    $installPlan = $runtimePlan + $installPlan
     $shareSource = Join-Path $PackageRoot "share"
     if (Test-Path -LiteralPath $shareSource -PathType Container) {
         Get-ChildItem -LiteralPath $shareSource -Recurse -File -Force |
@@ -334,7 +348,7 @@ function Install-PackageRoot([string]$PackageRoot, [string]$DestinationBin, [boo
             }
     }
 
-    foreach ($optional in @("README.md", "LICENSE-APACHE", "LICENSE-MIT", "rmux.1", "SHA256SUMS.txt")) {
+    foreach ($optional in @("README.md", "LICENSE-APACHE", "LICENSE-MIT", "CONPTY-LICENSE.txt", "rmux.1", "SHA256SUMS.txt")) {
         $source = Join-Path $PackageRoot $optional
         if (Test-Path -LiteralPath $source -PathType Leaf) {
             $installPlan += [pscustomobject]@{

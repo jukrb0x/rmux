@@ -98,6 +98,10 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-fork-windows-
 
+      - name: Prepare native ConPTY runtime for tests
+        shell: pwsh
+        run: ./scripts/prepare-conpty-windows.ps1 -Destination @("target/debug", "target/debug/deps")
+
       - name: Run fork regression tests
         shell: pwsh
         env:
@@ -151,6 +155,13 @@ jobs:
             "test", "-p", "rmux", "--locked", "--test", "windows_attach_exit",
             "windows_cmd_ping_updates_current_command_and_automatic_name_until_exit",
             "--", "--exact", "--test-threads=1"
+          )
+
+          Run "./scripts/assert-cargo-filter-nonempty.ps1" @(
+            "2", "--", "test", "-p", "rmux", "--locked", "--test", "windows_attach_exit", "windows_bundled_conpty_"
+          )
+          Run "cargo" @(
+            "test", "-p", "rmux", "--locked", "--test", "windows_attach_exit", "windows_bundled_conpty_", "--", "--ignored", "--test-threads=1"
           )
 
       - name: Build and verify supported package layout

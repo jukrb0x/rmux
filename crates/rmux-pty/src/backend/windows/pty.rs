@@ -7,9 +7,7 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_BROKEN_PIPE, ERROR_INVALID_PARAMETER, E_HANDLE, HANDLE, S_OK,
 };
-use windows_sys::Win32::System::Console::{
-    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
-};
+use windows_sys::Win32::System::Console::{COORD, HPCON};
 
 use crate::{Result, TerminalGeometry, TerminalSize};
 
@@ -19,6 +17,7 @@ use super::flags::{
 };
 use super::io::{create_conpty_input_pipe, create_pipe, PipePair};
 use super::perf;
+use super::runtime::api;
 use super::DsrBootstrap;
 
 #[derive(Debug)]
@@ -206,7 +205,7 @@ pub(crate) fn apply_size(pty: &WindowsPty, size: TerminalSize) -> Result<()> {
         .map_err(|_| io::Error::other("ConPTY state lock poisoned"))?;
     // SAFETY: `state.hpc` is an owned live ConPTY handle while the read lock is
     // held, and `coord` was range-checked from `TerminalSize`.
-    let hr = unsafe { ResizePseudoConsole(state.hpc.raw(), coord) };
+    let hr = unsafe { (api().resize)(state.hpc.raw(), coord) };
     drop(state);
     if hr != S_OK {
         if is_benign_resize_after_exit(hr) {
@@ -297,11 +296,11 @@ fn create_pseudo_console(
     // `hpc` is a valid out-pointer, and `coord_from_size` range-checks the
     // dimensions before the API call.
     let hr = unsafe {
-        CreatePseudoConsole(
+        (api().create)(
             coord_from_size(size)?,
             input.read.as_raw_handle() as HANDLE,
             output.write.as_raw_handle() as HANDLE,
-            flags.bits(),
+            if api().bundled { 0 } else { flags.bits() },
             &mut hpc,
         )
     };
@@ -361,7 +360,7 @@ impl OwnedHpcon {
             tracing::trace!(target: "rmux::conpty", "closing ConPTY");
             // SAFETY: `OwnedHpcon` owns a non-null ConPTY handle and closes it
             // exactly once here or from `Drop`.
-            unsafe { ClosePseudoConsole(self.0) };
+            unsafe { (api().close)(self.0) };
             self.0 = 0;
         }
     }

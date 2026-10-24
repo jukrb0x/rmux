@@ -64,6 +64,8 @@ fn fork_release_is_windows_only_immutable_and_tmux_bound() {
         "assert-cargo-filter-nonempty.ps1",
         "foreground_command_",
         "windows_cmd_ping_updates_current_command_and_automatic_name_until_exit",
+        "prepare-conpty-windows.ps1",
+        "windows_bundled_conpty_",
         "status_right_click_routes_window_menu_to_clicked_window_target",
         "scripts/package-windows.ps1",
         "scripts/verify-package-windows.ps1",

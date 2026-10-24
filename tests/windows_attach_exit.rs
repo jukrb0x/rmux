@@ -193,6 +193,77 @@ fn windows_attach_exit_emits_exited_banner() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+#[ignore = "requires Microsoft's staged ConPTY runtime"]
+fn windows_bundled_conpty_preserves_sixel_output() -> Result<(), Box<dyn Error>> {
+    let _serial = lock_windows_console_test();
+    assert!(
+        rmux_pty::bundled_conpty_available(),
+        "bundled ConPTY failed to load"
+    );
+    let mut producer = ChildCommand::new("pwsh.exe")
+        .args(["-NoLogo", "-NoProfile", "-Command", "[Console]::Write(([char]27).ToString() + 'Pq#0!10~' + [char]27 + '\\'); Start-Sleep -Seconds 1"])
+        .size(TerminalSize::new(100, 30))
+        .spawn()?;
+    let (forwarded, output) =
+        wait_for_needle_or_terminate(&mut producer, b"\x1bPq#0!10~\x1b\\", SETUP_TIMEOUT)?;
+    terminate_spawned(&mut producer);
+    assert!(
+        forwarded,
+        "bundled ConPTY dropped SIXEL: {}",
+        escaped_output(&output)
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Microsoft's staged ConPTY runtime"]
+fn windows_bundled_conpty_forwards_sixel_through_rmux() -> Result<(), Box<dyn Error>> {
+    let _serial = lock_windows_console_test();
+    assert!(
+        rmux_pty::bundled_conpty_available(),
+        "bundled ConPTY failed to load"
+    );
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rmux"));
+    let label = unique_label("win-native-sixel");
+    let _guard = RmuxServerGuard::new(&binary, label.clone());
+    run_rmux(
+        &binary,
+        &label,
+        ["new-session", "-d", "-s", "sixel", "cmd.exe", "/D", "/K"],
+    )?;
+    run_rmux(
+        &binary,
+        &label,
+        ["set-option", "-g", "allow-passthrough", "on"],
+    )?;
+    run_rmux(&binary, &label, ["set-option", "-g", "status", "off"])?;
+    let mut attach = ChildCommand::new(&binary)
+        .args(["-L", &label, "attach-session", "-t", "sixel"])
+        .env("WT_SESSION", "native-sixel-test")
+        .env("TERM", "")
+        .size(TerminalSize::new(100, 30))
+        .spawn()?;
+    let io = attach.master().try_clone_io()?;
+    wait_for_needle_or_error(&mut attach, b">", SETUP_TIMEOUT)?;
+    let clients = run_rmux_output(
+        &binary,
+        &label,
+        ["list-clients", "-F", "#{client_termfeatures}"],
+    )?;
+    assert!(String::from_utf8_lossy(&clients.stdout).contains("sixel"));
+    io.write_all(b"pwsh.exe -NoLogo -NoProfile -Command \"[Console]::Write(([char]27).ToString() + 'Pq#0!10~' + [char]27 + '\\')\"\r\n")?;
+    let (forwarded, output) =
+        wait_for_needle_or_terminate(&mut attach, b"\x1bPq#0!10~\x1b\\", SETUP_TIMEOUT)?;
+    terminate_spawned(&mut attach);
+    assert!(
+        forwarded,
+        "RMUX dropped native SIXEL: {}",
+        escaped_output(&output)
+    );
+    Ok(())
+}
+
+#[test]
 fn windows_full_helper_client_shell_handoff_starts_power_shell_pane_when_available(
 ) -> Result<(), Box<dyn Error>> {
     let _serial = lock_windows_console_test();

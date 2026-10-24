@@ -321,6 +321,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $stageDir "libexec/rmux") |
 Copy-Item -LiteralPath $binary -Destination (Join-Path $stageDir "rmux.exe")
 Copy-Item -LiteralPath $helperBinary -Destination (Join-Path $stageDir "libexec/rmux/rmux.exe")
 Copy-Item -LiteralPath $daemonBinary -Destination (Join-Path $stageDir "rmux-daemon.exe")
+& (Join-Path $PSScriptRoot "prepare-conpty-windows.ps1") -Target $Target -Destination @($stageDir, (Join-Path $stageDir "libexec/rmux"))
+Copy-Item -LiteralPath "resources/windows/CONPTY-LICENSE.txt" -Destination $stageDir
 Copy-Item -LiteralPath "scripts/install-windows.ps1" -Destination (Join-Path $stageDir "install.ps1")
 Copy-Item -LiteralPath "README.md", "LICENSE-APACHE", "LICENSE-MIT", "docs/man/rmux.1" -Destination $stageDir
 $completionDir = Join-Path ([System.IO.Path]::GetTempPath()) "rmux-completions-$([System.Guid]::NewGuid().ToString('N'))"
@@ -392,6 +394,9 @@ $metadata = [ordered]@{
     daemon_binary_path = "rmux-daemon.exe"
     daemon_binary_sha256 = $daemonBinarySha256
     daemon_binary_bytes = $daemonBinaryBytes
+    conpty_version = "1.24.261001001"
+    conpty_sha256 = Sha256File (Join-Path $stageDir "conpty.dll")
+    openconsole_sha256 = Sha256File (Join-Path $stageDir "OpenConsole.exe")
     rmux_version = $version
     git_commit = $gitCommit
     git_dirty = $gitDirty

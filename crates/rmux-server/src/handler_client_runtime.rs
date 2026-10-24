@@ -569,6 +569,9 @@ pub(in crate::handler) fn effective_client_terminal_context(
         push_unique_terminal_feature(&mut client_terminal.terminal_features, "bpaste");
         push_unique_terminal_feature(&mut client_terminal.terminal_features, "mouse");
         push_unique_terminal_feature(&mut client_terminal.terminal_features, "clipboard");
+        if rmux_pty::bundled_conpty_available() {
+            push_unique_terminal_feature(&mut client_terminal.terminal_features, "sixel");
+        }
     }
     client_terminal
 }
@@ -790,6 +793,9 @@ mod tests {
         if cfg!(windows) {
             features.push("title");
         }
+        if rmux_pty::bundled_conpty_available() {
+            features.push("sixel");
+        }
         features
     }
 
@@ -798,6 +804,9 @@ mod tests {
         let mut features = vec!["SYNC", "BPASTE", "MOUSE", "clipboard"];
         if cfg!(windows) {
             features.push("title");
+        }
+        if rmux_pty::bundled_conpty_available() {
+            features.push("sixel");
         }
         features
     }

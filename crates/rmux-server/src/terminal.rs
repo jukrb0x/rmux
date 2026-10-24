@@ -223,6 +223,11 @@ impl TerminalProfile {
                 );
             }
             set_environment_value(&mut resolved, "TERM_PROGRAM".to_owned(), "rmux".to_owned());
+            #[cfg(windows)]
+            if !rmux_pty::bundled_conpty_available() {
+                // Inbox ConPTY drops SIXEL; let pane apps select their own fallback.
+                set_environment_value(&mut resolved, "WT_SESSION".to_owned(), String::new());
+            }
             set_environment_value(
                 &mut resolved,
                 "TERM_PROGRAM_VERSION".to_owned(),

@@ -503,6 +503,15 @@ function AssertArchiveInstaller([string]$InstallScript, [string]$Root) {
     }
 
     $installedBinary = Join-Path $installBin "rmux.exe"
+    $packageRoot = Split-Path -Parent $InstallScript
+    foreach ($layout in @(@{ Source = $packageRoot; Target = $installBin }, @{ Source = (Join-Path $packageRoot "libexec/rmux"); Target = (Join-Path $installRoot "libexec/rmux") })) {
+        foreach ($name in @("conpty.dll", "OpenConsole.exe")) {
+            $source = Join-Path $layout.Source $name
+            if ((Test-Path -LiteralPath $source) -and (Sha256File (Join-Path $layout.Target $name)) -ne (Sha256File $source)) {
+                Fail "install.ps1 did not install matching native runtime: $name"
+            }
+        }
+    }
     AssertSuccess $installedBinary @("-V") | Out-Null
     AssertHelperFallback $installedBinary
 }
@@ -621,6 +630,10 @@ function AssertArchiveInstallerTransaction([string]$InstallScript, [string]$Pack
         foreach ($unexpected in @(
             (Join-Path $freshBin "rmux.exe"),
             (Join-Path $freshBin "rmux-daemon.exe"),
+            (Join-Path $freshBin "conpty.dll"),
+            (Join-Path $freshBin "OpenConsole.exe"),
+            (Join-Path $freshRoot "libexec\rmux\conpty.dll"),
+            (Join-Path $freshRoot "libexec\rmux\OpenConsole.exe"),
             (Join-Path $freshRoot "libexec\rmux\rmux.exe"),
             (Join-Path $freshRoot "README.md")
         )) {
@@ -704,6 +717,7 @@ function AssertArchiveInstallerTransaction([string]$InstallScript, [string]$Pack
                 $env:RMUX_INSTALL_TEST_LOCK_WAIT_EVENT = $concurrentWaitEventName
                 $concurrentInstaller = Start-Process `
                     -FilePath $powerShell `
+                    -WindowStyle Hidden `
                     -ArgumentList @(
                         "-NoProfile", "-ExecutionPolicy", "Bypass",
                         "-File", "`"$InstallScript`"",

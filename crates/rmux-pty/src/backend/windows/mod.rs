@@ -6,8 +6,13 @@ mod flags;
 mod io;
 mod perf;
 mod pty;
+mod runtime;
 mod spawn;
 mod version;
+
+pub(crate) fn bundled_conpty_available() -> bool {
+    runtime::api().bundled
+}
 
 pub(crate) use dsr::{should_enable_dsr_bootstrap, DsrBootstrap};
 pub(crate) use pty::{apply_geometry, apply_size, open_pty_pair, query_size, WindowsPty};

@@ -447,6 +447,7 @@
     "scripts/perf-diff.py",
     "scripts/perf-provenance.sh",
     "scripts/perf_artifact.py",
+    "scripts/prepare-conpty-windows.ps1",
     "scripts/ratatui-rmux-budget.sh",
     "scripts/release-identity.sh",
     "scripts/release-local.sh",
