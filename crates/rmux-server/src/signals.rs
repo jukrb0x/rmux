@@ -41,10 +41,12 @@ impl std::fmt::Debug for SignalWatcher {
 impl SignalWatcher {
     pub(crate) fn install() -> io::Result<Self> {
         let wake = rmux_os::signals::install_server_signal_flags()?.into_read_fd();
-        Ok(Self {
-            // SAFETY: The process-global signal descriptor stays open and unchanged until exit.
-            wake: unsafe { AsyncFd::register(wake) }?,
-        })
+        #[expect(
+            deprecated,
+            reason = "The signal fd stays open until exit; keep the server free of unsafe code"
+        )]
+        let wake = AsyncFd::new(wake)?;
+        Ok(Self { wake })
     }
 
     pub(crate) async fn wait(&self) -> io::Result<()> {

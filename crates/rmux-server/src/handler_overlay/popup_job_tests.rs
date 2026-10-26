@@ -37,9 +37,11 @@ async fn popup_async_reader_yields_after_stale_readiness() {
 
     let pair = PtyPair::open().expect("pty pair");
     let (master, slave) = pair.into_split();
-    // SAFETY: The moved PtyIo owns the descriptor for the registration's lifetime.
-    let reader =
-        unsafe { tokio::io::unix::AsyncFd::register(master.into_io()) }.expect("async pty reader");
+    #[expect(
+        deprecated,
+        reason = "PtyIo owns a stable fd; keep the server free of unsafe code"
+    )]
+    let reader = tokio::io::unix::AsyncFd::new(master.into_io()).expect("async pty reader");
     let mut writer = std::fs::File::from(slave.into_owned_fd());
     writer.write_all(b"a").expect("seed popup output");
 

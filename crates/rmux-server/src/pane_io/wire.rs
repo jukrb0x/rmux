@@ -81,10 +81,13 @@ pub(super) fn open_attach_target(
 }
 
 #[cfg(unix)]
+#[expect(
+    deprecated,
+    reason = "PtyIo owns a stable fd; keep the server free of unsafe code"
+)]
 pub(super) fn open_pane_writer(pane_master: PtyMaster) -> io::Result<AsyncFd<PtyIo>> {
     let pane_writer = pane_master.into_io();
-    // SAFETY: PtyIo owns the descriptor and does not replace it while registered.
-    unsafe { AsyncFd::register(pane_writer) }.map_err(io::Error::from)
+    AsyncFd::new(pane_writer)
 }
 
 pub(super) async fn emit_render_frame(
