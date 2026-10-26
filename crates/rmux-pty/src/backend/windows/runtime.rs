@@ -70,13 +70,17 @@ fn load_bundled() -> Option<Api> {
     Some(unsafe {
         Api {
             create: std::mem::transmute::<
-                _,
+                unsafe extern "system" fn() -> isize,
                 unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> i32,
             >(create),
-            resize: std::mem::transmute::<_, unsafe extern "system" fn(HPCON, COORD) -> i32>(
-                resize,
-            ),
-            close: std::mem::transmute::<_, unsafe extern "system" fn(HPCON)>(close),
+            resize: std::mem::transmute::<
+                unsafe extern "system" fn() -> isize,
+                unsafe extern "system" fn(HPCON, COORD) -> i32,
+            >(resize),
+            close: std::mem::transmute::<
+                unsafe extern "system" fn() -> isize,
+                unsafe extern "system" fn(HPCON),
+            >(close),
             bundled: true,
         }
     })

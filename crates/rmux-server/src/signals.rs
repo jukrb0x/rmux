@@ -42,7 +42,8 @@ impl SignalWatcher {
     pub(crate) fn install() -> io::Result<Self> {
         let wake = rmux_os::signals::install_server_signal_flags()?.into_read_fd();
         Ok(Self {
-            wake: AsyncFd::new(wake)?,
+            // SAFETY: The process-global signal descriptor stays open and unchanged until exit.
+            wake: unsafe { AsyncFd::register(wake) }?,
         })
     }
 

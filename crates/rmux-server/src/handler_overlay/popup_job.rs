@@ -457,7 +457,8 @@ fn spawn_popup_reader_task(
     reader_fd.set_nonblocking().map_err(|error| {
         RmuxError::Server(format!("failed to make popup pty nonblocking: {error}"))
     })?;
-    let reader = AsyncFd::new(reader_fd)
+    // SAFETY: PtyIo owns the descriptor and does not replace it while registered.
+    let reader = unsafe { AsyncFd::register(reader_fd) }
         .map_err(|error| RmuxError::Server(format!("failed to watch popup pty: {error}")))?;
     tokio::spawn(async move {
         let mut buffer = [0_u8; 8192];

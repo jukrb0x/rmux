@@ -711,6 +711,7 @@ fn last_os_error() -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::os::windows::io::AsRawHandle;
     use std::process::{Command, Stdio};
     use std::thread;
@@ -726,19 +727,13 @@ mod tests {
     #[test]
     fn job_object_lists_active_root_and_descendant_processes() {
         let job = JobObjectGuard::new(false).expect("job object");
-        let mut child = Command::new("powershell.exe")
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Start-Sleep -Milliseconds 750; $children = 1..12 | ForEach-Object { Start-Process -PassThru -WindowStyle Hidden -FilePath $env:ComSpec -ArgumentList '/d','/s','/c','ping 127.0.0.1 -n 10 >nul' }; Wait-Process -Id $children.Id",
-            ])
-            .stdin(Stdio::null())
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/q"])
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn delayed descendant owner");
+            .expect("spawn descendant owner");
         let root_pid = child.id();
         let assigned = unsafe {
             // SAFETY: Both handles are live for the duration of this call and
@@ -749,6 +744,11 @@ mod tests {
             )
         };
         assert_ne!(assigned, 0, "job assignment failed: {}", last_os_error());
+
+        // Feed commands after job assignment instead of racing PowerShell startup.
+        child.stdin.as_mut().expect("child stdin").write_all(
+            b"for /l %i in (1,1,12) do start \"\" /b cmd.exe /d /q /c \"ping 127.0.0.1 -n 30 >nul\"\r\n",
+        ).expect("start descendants in assigned job");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let active = loop {

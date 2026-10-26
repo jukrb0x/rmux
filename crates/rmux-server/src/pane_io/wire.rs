@@ -83,7 +83,8 @@ pub(super) fn open_attach_target(
 #[cfg(unix)]
 pub(super) fn open_pane_writer(pane_master: PtyMaster) -> io::Result<AsyncFd<PtyIo>> {
     let pane_writer = pane_master.into_io();
-    AsyncFd::new(pane_writer)
+    // SAFETY: PtyIo owns the descriptor and does not replace it while registered.
+    unsafe { AsyncFd::register(pane_writer) }.map_err(io::Error::from)
 }
 
 pub(super) async fn emit_render_frame(
